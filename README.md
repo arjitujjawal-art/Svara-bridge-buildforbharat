@@ -30,6 +30,21 @@ Calibration runs on the device. The browser saves only the chosen wait and a for
 - Under a managed HTTPS proxy, run `docker compose -f docker-compose.yml -f infra/compose.proxy.yml up --build` and set `SVARA_NETWORK_CA` to the trusted PEM bundle if it differs from the system default in the override. Verification stays enabled.
 - This local build has one app worker, in-memory rooms that expire after 30 minutes of inactivity, and one concurrent ASR job. Restarting the app clears the rooms. Test with fictional logistics and consented recordings. Only approved messages and structured offer/receipt events enter the room journal.
 
+## Private interpretation and review
+
+The patient browser binds each captured turn to the open offer at recording start. A small Hindi/Hinglish grammar consumes the entire refusal and proposed slot. It checks any spoken refusal time or weekday against that offer. For “paanch baje nahi, Monday chaar ya saat baje”, review keeps Monday, offers four and seven, then asks for AM or PM. The patient can also send the original wording. Unsupported language and conditions open as editable messages and require explicit approval.
+
+Private review derives the caption, speech and outgoing decision from the same draft revision. Edits invalidate prior review. A replaced offer blocks the old decision. The browser keeps the raw transcript private unless the patient explicitly approves that wording for delivery.
+
+## Remaining architecture work
+
+| Capability | Current boundary | Next verification |
+|---|---|---|
+| Local recognition | One CPU worker can be busy or unavailable. The first start depends on downloading weights. | Provision the verified model and run fresh Hindi/Hinglish utterances, recording refusals, critical-field errors and warm latency. |
+| Personal word correction | The browser remembers pause timing. A correction made in private review applies to one message. | Add opt-in, reversible doctor-name mappings and verify the same word stays untouched outside doctor selection. |
+| Spoken clarification | Review offers supported hour choices and switch input. Another recording starts a fresh turn. | Route a spoken answer into the pending field of the same revision, reject late replies, and preserve previously confirmed details. |
+| Evaluation | The suite includes fixtures, browser microphones and two-client exchanges. | Score held-out consented recordings on critical fields, independent task completion and end-to-end latency on physical Android. |
+
 ## Testing channels
 
 | Channel | Exercise |
@@ -55,6 +70,7 @@ With Compose running:
 python -m pip install -r requirements-browser.txt
 python -m playwright install chromium
 python tests/browser_exchange.py
+python tests/browser_review.py
 python tests/browser_capture.py
 python tests/browser_calibration.py
 ```

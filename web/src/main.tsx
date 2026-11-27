@@ -4,10 +4,11 @@ import { Calibration } from "./Calibration";
 import { DEFAULT_WAIT, readTiming, saveTiming, seconds } from "./timing";
 import { Playback, Recorder, transcribe } from "./audio";
 import { Comparison } from "./Comparison";
-import { displaySlot, interpret, REFERENCE_MONDAY, SAMPLE_TEXT, slot, speakSlot } from "./clinic";
+import { displaySlot, REFERENCE_MONDAY, SAMPLE_TEXT, slot, speakSlot } from "./clinic";
 import {
-  api, createRoom, Credentials, Decision, emptyRoom, History, joinRoom, reduceRoom, Relay, Role, Slot,
+  api, Appointment, createRoom, Credentials, emptyRoom, History, joinRoom, reduceRoom, Relay, Role, Slot,
 } from "./relay";
+import { candidate, Draft, reviewDecision, timeOf } from "./review";
 import "./style.css";
 
 const SAMPLE_SLOT = slot("2026-12-04", "17:00");
@@ -218,24 +219,6 @@ function Desk() {
   </>;
 }
 
-type Draft = {
-  turn_id: string; eventId: string; revision: number;
-  raw: string; text: string; intent: Decision["intent"]; offerId?: string;
-  date: string; time: string; hour: number | null; period: "" | "am" | "pm";
-};
-
-function candidate(raw: string, currentOffer?: string): Draft {
-  const parsed = interpret(raw);
-  const time = parsed.hour && parsed.period
-    ? `${String(parsed.hour % 12 + (parsed.period === "pm" ? 12 : 0)).padStart(2, "0")}:00` : "";
-  const proposed = parsed.date || parsed.hour;
-  return {
-    turn_id: crypto.randomUUID(), eventId: crypto.randomUUID(), revision: 1, raw, text: raw,
-    intent: currentOffer && parsed.rejected ? proposed ? "counter" : "decline" : "message",
-    offerId: currentOffer, date: parsed.date, time, hour: parsed.hour, period: parsed.period,
-  };
-}
-
 function useSwitch(enabled: boolean, speed: number) {
   useEffect(() => {
     if (!enabled) return;
@@ -286,8 +269,8 @@ function Patient() {
   const recorder = useRef<Recorder | null>(null);
   const work = useRef<AbortController | null>(null);
   const simulatedDesk = useRef<Relay | null>(null);
-  const recordingOffer = useRef<string | undefined>(undefined);
-  const openOffer = room.state.appointment?.status === "open" ? room.state.appointment.offer_id : undefined;
+  const recordingOffer = useRef<Appointment | undefined>(undefined);
+  const openOffer = room.state.appointment?.status === "open" ? room.state.appointment : undefined;
   useSwitch(scan, speed);
 
   function stopWork() {
@@ -370,7 +353,7 @@ function Patient() {
     });
   }
 
-  async function recognise(workItem: AbortController, source: Promise<Blob>, offeredId?: string) {
+  async function recognise(workItem: AbortController, source: Promise<Blob>, offered?: Appointment) {
     if (!room.credentials) return;
     setPhase("processing");
     const turnId = crypto.randomUUID();
@@ -379,8 +362,11 @@ function Patient() {
       workItem.signal.throwIfAborted();
       const result = await transcribe(room.credentials, turnId, 1, audio, workItem.signal);
       workItem.signal.throwIfAborted();
+      if (result.turn_id !== turnId || result.revision !== 1) {
+        throw new Error("Recognition returned a different recording. Please retry your turn.");
+      }
       if (!result.raw_text) throw new Error("No words were recognised. Try again or use a saved phrase.");
-      setDraft({ ...candidate(result.raw_text, offeredId), turn_id: turnId });
+      setDraft({ ...candidate(result.raw_text, offered), turn_id: turnId });
       setReadRevision(undefined);
       setNotice(`Local recognition processed ${(result.audio_ms / 1000).toFixed(1)} seconds.`);
     } catch (error) {
@@ -428,7 +414,7 @@ function Patient() {
     const appointment = room.state.appointment;
     if (!appointment || appointment.status !== "open") return;
     setDraft({
-      ...candidate("", appointment.offer_id), intent,
+      ...candidate("", appointment), intent,
       text: "", date: appointment.slot.date, time: appointment.slot.time,
     });
     setReadRevision(undefined);
@@ -438,14 +424,10 @@ function Patient() {
   const stale = draft?.intent !== "message" && draft && (
     !draft.offerId || draft.offerId !== current?.offer_id || current?.status !== "open"
   );
-  const requested = draft?.date && draft.time ? slot(draft.date, draft.time) : undefined;
-  const currentLabel = current ? speakSlot(current.slot) : "";
-  let approved = "";
-  if (draft?.intent === "message") approved = draft.text.trim();
-  if (draft?.intent === "accept") approved = `हाँ, ${currentLabel} मेरे लिए ठीक है।`;
-  if (draft?.intent === "decline") approved = `नहीं, ${currentLabel} मेरे लिए ठीक नहीं है।`;
-  if (draft?.intent === "counter" && requested) approved = `नहीं, ${currentLabel} मेरे लिए ठीक नहीं है। क्या ${speakSlot(requested)} मिल सकता है?`;
-  const reviewable = !!approved && !stale && phase === "idle" && room.ready;
+  const decision = draft && reviewDecision(draft, current);
+  const approved = decision?.approved_text ?? "";
+  const requested = decision?.requested_slot;
+  const reviewable = !!decision && phase === "idle" && room.ready;
   const invite = new URL("/desk", location.href);
   if (room.credentials?.invite) invite.hash = new URLSearchParams({
     room: room.credentials.room_id, invite: room.credentials.invite,
@@ -467,15 +449,10 @@ function Patient() {
   }
 
   async function sendDraft() {
-    if (!draft || !reviewable || readRevision !== draft.eventId || !room.relay.current) return;
+    if (!draft || !decision || !reviewable || readRevision !== draft.eventId || !room.relay.current) return;
     setPhase("sending");
     try {
-      await room.relay.current.send({
-        type: "patient.commit", turn_id: draft.turn_id, revision: draft.revision,
-        intent: draft.intent, approved_text: approved,
-        offer_id: draft.intent === "message" ? undefined : draft.offerId,
-        requested_slot: draft.intent === "counter" ? requested : undefined,
-      }, draft.eventId);
+      await room.relay.current.send({ type: "patient.commit", ...decision }, draft.eventId);
       setDraft(null);
       setReadRevision(undefined);
       setNotice("Approved message sent.");
@@ -533,7 +510,7 @@ function Patient() {
           <button data-scan disabled={phase !== "idle"} onClick={() => prepareOfferDecision("decline")}>Decline offer</button>
           <button data-scan disabled={phase !== "idle"} onClick={() => prepareOfferDecision("accept")}>Accept for review</button>
           <button data-scan disabled={phase !== "idle"} onClick={() => {
-            setDraft({ ...candidate("", current.offer_id), intent: "counter" });
+            setDraft({ ...candidate("", current), intent: "counter" });
             setReadRevision(undefined);
           }}>Request another time</button>
         </div>}
@@ -541,7 +518,7 @@ function Patient() {
           setDraft(candidate("कृपया समय दोबारा बताइए।")); setReadRevision(undefined);
         }}>Saved phrase · repeat the offer</button>
         {demo && <button disabled={phase !== "idle"} onClick={() => {
-          setDraft(candidate(SAMPLE_TEXT, current?.status === "open" ? current.offer_id : undefined));
+          setDraft(candidate(SAMPLE_TEXT, openOffer));
           setReadRevision(undefined);
         }}>Use example transcript (no recognition)</button>}
       </section>}
@@ -549,24 +526,36 @@ function Patient() {
         <h2 id="private-review">Private review</h2>
         {stale && <p role="alert">The clinic changed the offer. Review the latest offer before replying.</p>}
         {draft.raw && <details><summary>Original transcript</summary><p lang="hi">{draft.raw}</p></details>}
+        {draft.raw && draft.intent !== "message" && <button data-scan disabled={phase !== "idle"}
+          onClick={() => revise({ intent: "message", text: draft.raw })}>Use my original words</button>}
+        {draft.intent === "message" && draft.offerId && <p>To change the appointment, choose an offer action.</p>}
+        {draft.intent === "message" && [...draft.text.trim()].length > 600 && <p role="alert">Shorten the message to 600 characters to send it.</p>}
         {draft.intent === "message" && <label>Message
           <textarea value={draft.text} maxLength={600} disabled={phase !== "idle"}
             onChange={event => revise({ text: event.target.value })} /></label>}
         {draft.intent === "counter" && <div>
+          {draft.hours.length > 1 && !draft.hour && <fieldset>
+            <legend>Which hour did you mean?</legend>
+            <div className="actions">{draft.hours.map(hour => <button key={hour} data-scan disabled={phase !== "idle"}
+              onClick={() => revise({ hour, time: timeOf(hour, draft.period) })}>{hour} o’clock</button>)}
+              <button data-scan disabled={phase !== "idle"} onClick={() => revise({ hours: [], hour: null, time: "" })}>
+                Neither · choose a time
+              </button></div>
+          </fieldset>}
           {draft.hour && !draft.period && <fieldset>
             <legend>Did you mean {draft.hour} in the morning or later in the day?</legend>
             <div className="actions">{(["am", "pm"] as const).map(period => <button key={period} data-scan
               disabled={phase !== "idle"} onClick={() => revise({
-                period, time: `${String(draft.hour! % 12 + (period === "pm" ? 12 : 0)).padStart(2, "0")}:00`,
+                period, time: timeOf(draft.hour!, period),
               })}>{period === "am" ? "Morning" : "Afternoon or evening"}</button>)}
-              <button data-scan disabled={phase !== "idle"} onClick={() => {
-                setDraft(null); setReadRevision(undefined); void beginRecording();
-              }}>Neither · say it again</button></div>
+              <button data-scan disabled={phase !== "idle"} onClick={() => revise({ hours: [], hour: null, time: "" })}>
+                Neither · choose a time
+              </button></div>
           </fieldset>}
           <label>Requested date <input type="date" value={draft.date} disabled={phase !== "idle"}
             onChange={event => revise({ date: event.target.value })} /></label>
           <label>Requested time in India <input type="time" value={draft.time} disabled={phase !== "idle"}
-            onChange={event => revise({ time: event.target.value })} /></label>
+            onChange={event => revise({ time: event.target.value, hours: [], hour: null, period: "" })} /></label>
         </div>}
         {approved && !stale && <p className="sentence" lang="hi">{approved}</p>}
         {draft.intent === "counter" && requested && <p>{displaySlot(requested)} · India time</p>}
