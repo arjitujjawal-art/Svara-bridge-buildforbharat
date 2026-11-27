@@ -64,7 +64,7 @@ class Speech:
         if self.asr_origin:
             asr = "unavailable"
             try:
-                async with httpx.AsyncClient(timeout=1.0) as client:
+                async with httpx.AsyncClient(timeout=1.0, trust_env=False) as client:
                     response = await client.get(f"{self.asr_origin}/health")
                     if response.is_success:
                         asr = "ready"
@@ -95,7 +95,7 @@ class Speech:
 
     async def infer(self, audio: Audio) -> str:
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=45.0, trust_env=False) as client:
                 response = await client.post(
                     f"{self.asr_origin}/inference",
                     data={"language": "hi", "translate": "false", "response_format": "json",

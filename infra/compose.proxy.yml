@@ -1,0 +1,14 @@
+# Optional trust configuration for environments with a managed HTTPS proxy.
+services:
+  app:
+    build:
+      secrets:
+        - network_ca
+  asr:
+    environment:
+      CURL_CA_BUNDLE: /run/secrets/network_ca
+    secrets:
+      - network_ca
+secrets:
+  network_ca:
+    file: ${SVARA_NETWORK_CA:-/etc/ssl/certs/ca-certificates.crt}

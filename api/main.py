@@ -9,7 +9,8 @@ from uuid import UUID
 from fastapi import FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import StringConstraints, ValidationError
+from pydantic import Field, StringConstraints, ValidationError
+from starlette.requests import ClientDisconnect
 
 from .protocol import ACTION, Payload, Text
 from .rooms import ROOM_IDLE, Room, RoomError, Rooms
@@ -27,7 +28,7 @@ class Join(Payload):
 class RelayAuth(Payload):
     room_id: UUID
     token: Token
-    after: Annotated[int, Query(ge=0)] | None = None
+    after: Annotated[int, Field(ge=0)] | None = None
 
 
 class Say(Payload):
@@ -125,10 +126,14 @@ def create_app() -> FastAPI:
         room.speech_jobs.add(key)
         try:
             buffer = bytearray()
-            async for chunk in request.stream():
-                if len(buffer) + len(chunk) > MAX_WAV:
-                    raise RoomError("audio_too_large", "Use up to 30 seconds of audio.", 413)
-                buffer.extend(chunk)
+            try:
+                async with asyncio.timeout(10):
+                    async for chunk in request.stream():
+                        if len(buffer) + len(chunk) > MAX_WAV:
+                            raise RoomError("audio_too_large", "Use up to 30 seconds of audio.", 413)
+                        buffer.extend(chunk)
+            except (TimeoutError, ClientDisconnect) as exc:
+                raise RoomError("upload_interrupted", "Recording upload was interrupted. Retry.", 408) from exc
             audio = read_audio(bytes(buffer))
             started = time.monotonic()
             result = await speech.transcribe(audio)

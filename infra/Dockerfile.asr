@@ -1,0 +1,18 @@
+FROM debian:bookworm-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates cmake g++ git make
+# Upstream v1.7.6 source archive, pinned by commit and digest.
+ADD --checksum=sha256:7b17da903114ed45d82f48c030e3be6a5a8a279f884b2f733706dbb4e832fb6b https://codeload.github.com/ggml-org/whisper.cpp/tar.gz/a8d002cfd879315632a579e73f0148d06959de36 /tmp/whisper.tar.gz
+RUN mkdir /src && tar -xzf /tmp/whisper.tar.gz --strip-components=1 -C /src
+RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF \
+    && cmake --build /build --target whisper-server --parallel 3
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libgomp1 \
+    && mkdir -p /models && chown 65534:65534 /models \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /build/bin/whisper-server /usr/local/bin/
+COPY --from=build /src/LICENSE /usr/local/share/doc/whisper.cpp/LICENSE
+COPY --chmod=644 infra/start-asr.sh /usr/local/bin/start-asr
+USER 65534
+ENTRYPOINT ["sh", "/usr/local/bin/start-asr"]

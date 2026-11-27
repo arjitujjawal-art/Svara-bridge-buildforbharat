@@ -86,7 +86,7 @@ class Room:
             "desk_connected": self.desk_key is not None,
             "ended": self.ended,
             "appointment": self.appointment.snapshot() if self.appointment else None,
-            "history": list(self.messages.values()),
+            "history": [message.copy() for message in self.messages.values()],
         }
 
     def apply(self, role: Role, action: Action) -> int:

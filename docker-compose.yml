@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${SVARA_PORT:-8080}:8000"
+    environment:
+      SVARA_ASR_ORIGIN: http://asr:8081
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 4s
+      retries: 4
+  asr:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.asr
+    volumes:
+      - model:/models
+volumes:
+  model:
