@@ -17,6 +17,12 @@ Open http://localhost:8080/patient. SvaraBridge is a turn-based Hindi/Hinglish c
 
 For Android microphone capture, serve the same origin over trusted HTTPS and forward WebSocket upgrades with the original Host header. Localhost is suitable for a single laptop. Space selects the currently highlighted button when scanning is enabled. Use manual Finish if speech detection is still warming up.
 
+### Personal pause time
+
+Before a call, choose **Access preferences → Find my pause time**. Record three short phrases and finish each one yourself. Silero measures gaps of at least 256 ms between sustained speech segments. With usable pauses in at least two phrases, the suggested wait is 1.8 times the median internal pause, bounded to 2.5–4 seconds. Choose **Use suggested wait** to apply it to future turns on this browser. You can also select a wait manually, choose manual finish, or reset the preference to three seconds.
+
+Calibration runs on the device. The browser saves only the chosen wait and a format version. The test lab includes the saved automatic wait as a third comparison when it differs from three seconds.
+
 ## Local speech services
 
 - The app container hosts static assets, FastAPI, and Hindi eSpeak NG. The internal ASR container builds whisper.cpp v1.7.6 from a commit- and checksum-pinned source archive. Its first startup fetches the 142 MiB multilingual base model to a named volume and checks it against [the hash published upstream](https://github.com/ggml-org/whisper.cpp/blob/v1.7.6/models/README.md). Later starts use the verified local copy.
@@ -50,6 +56,7 @@ python -m pip install -r requirements-browser.txt
 python -m playwright install chromium
 python tests/browser_exchange.py
 python tests/browser_capture.py
+python tests/browser_calibration.py
 ```
 
 Set `CHROMIUM_PATH` to use a system Chromium and `SVARA_TEST_ORIGIN` if the app is on another port. Browser tests use a synthetic fixture and separate browser contexts. They do not replace live Android or native-speaker intelligibility tests.

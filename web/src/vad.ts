@@ -19,11 +19,12 @@ export function loadVad() {
   });
 }
 
-export async function measure(samples: Float32Array) {
+export async function measure(samples: Float32Array, signal?: AbortSignal) {
   const detector = await loadVad();
   const probabilities: number[] = [];
   try {
     for (let offset = 0; offset < samples.length; offset += FRAME_SAMPLES) {
+      signal?.throwIfAborted();
       const frame = new Float32Array(FRAME_SAMPLES);
       frame.set(samples.subarray(offset, offset + FRAME_SAMPLES));
       const result = await detector.process(frame);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { transcribe, wav } from "./audio";
 import { findBoundary, FRAME_MS, FRAME_SAMPLES } from "./endpoint";
 import { api, createRoom, Credentials } from "./relay";
+import { DEFAULT_WAIT, readTiming } from "./timing";
 
 type Run = { label: string; cutoff: number; url: string; transcript: string };
 
@@ -33,7 +34,12 @@ export function Comparison({ asrReady }: { asrReady: boolean }) {
       const trace = await measure(samples);
       setStatus("Comparing cutoffs on the same Silero frame trace…");
 
-      for (const [label, wait] of [["Fixed 800 ms", 800], ["Longer 3,000 ms", 3000]] as const) {
+      const settings: [string, number][] = [["Fixed 800 ms", 800], ["Longer 3,000 ms", DEFAULT_WAIT]];
+      const savedWait = readTiming();
+      if (savedWait > 0 && savedWait !== DEFAULT_WAIT) {
+        settings.push([`My pause time · ${savedWait.toLocaleString("en-IN")} ms`, savedWait]);
+      }
+      for (const [label, wait] of settings) {
         const boundary = findBoundary(trace, wait);
         if (!boundary) throw new Error("The detector found no speech in this recording.");
         const clip = wav(samples.subarray(boundary.start * FRAME_SAMPLES, boundary.end * FRAME_SAMPLES));
@@ -63,7 +69,7 @@ export function Comparison({ asrReady }: { asrReady: boolean }) {
 
   return <section>
     <h2>Compare one recording</h2>
-    <p>Both settings use the same speech probabilities and recognition settings. The demo fixture is synthetic Hindi with a 1.5-second internal pause.</p>
+    <p>Each setting uses the same speech probabilities and recognition settings. The demo fixture is synthetic Hindi with a 1.5-second internal pause.</p>
     <button disabled={busy} onClick={() => void compare(
       api("/api/sample.wav").then(response => response.arrayBuffer()),
     )}>Compare sample recording</button>

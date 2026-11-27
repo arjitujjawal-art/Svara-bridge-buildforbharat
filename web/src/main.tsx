@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Calibration } from "./Calibration";
+import { DEFAULT_WAIT, readTiming, saveTiming, seconds } from "./timing";
 import { Playback, Recorder, transcribe } from "./audio";
 import { Comparison } from "./Comparison";
 import { displaySlot, interpret, REFERENCE_MONDAY, SAMPLE_TEXT, slot, speakSlot } from "./clinic";
@@ -271,7 +273,14 @@ function Patient() {
   const [phase, setPhase] = useState<"idle" | "starting" | "recording" | "processing" | "playing" | "sending">("idle");
   const [scan, setScan] = useState(false);
   const [speed, setSpeed] = useState(2000);
-  const [waitMs, setWaitMs] = useState(3000);
+  const [waitMs, setWaitMs] = useState(readTiming);
+  const [calibrating, setCalibrating] = useState(false);
+
+  function applyWait(wait: number) {
+    setWaitMs(wait);
+    setCalibrating(false);
+    setNotice(saveTiming(wait) ? "Pause preference updated." : "Using this pause setting for this visit. Browser storage is unavailable.");
+  }
   const [demo, setDemo] = useState(false);
   const [creating, setCreating] = useState(false);
   const recorder = useRef<Recorder | null>(null);
@@ -478,6 +487,8 @@ function Patient() {
     }
   }
 
+  if (calibrating) return <main><Calibration onApply={applyWait} onExit={() => setCalibrating(false)} /></main>;
+
   return <>
     <header><a href="/">SvaraBridge</a><span>PATIENT</span></header>
     <main>
@@ -577,10 +588,16 @@ function Patient() {
       <section>
         <h2>Access preferences</h2>
         <label>Pause before finishing a recording <select value={waitMs} disabled={phase !== "idle"}
-          onChange={event => setWaitMs(Number(event.target.value))}>
+          onChange={event => applyWait(Number(event.target.value))}>
+          {![0, 2500, 3000, 4000].includes(waitMs) && <option value={waitMs}>{seconds(waitMs)}</option>}
           <option value={2500}>2.5 seconds</option><option value={3000}>3 seconds</option>
           <option value={4000}>4 seconds</option><option value={0}>Manual finish</option>
         </select></label>
+        {(!room.credentials || room.state.ended) && <button data-scan disabled={creating}
+          onClick={() => setCalibrating(true)}>Find my pause time</button>}
+        {waitMs !== DEFAULT_WAIT && <button data-scan disabled={phase !== "idle"} onClick={() => applyWait(DEFAULT_WAIT)}>
+          Reset pause preference
+        </button>}
         <h3>Switch access</h3>
         <button data-scan aria-pressed={scan} onClick={() => setScan(!scan)}>{scan ? "Pause scanning" : "Start scanning"}</button>
         <label>Scan speed <select value={speed} onChange={event => setSpeed(Number(event.target.value))}>

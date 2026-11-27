@@ -18,7 +18,7 @@ export class Recorder {
   ) {}
 
   static async start(
-    finish: () => void, waitMs: number, report: (message: string) => void,
+    finish: () => void, waitMs: number, report: (message: string) => void, signal?: AbortSignal,
   ): Promise<Recorder> {
     if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) {
       throw new Error("Microphone capture requires a supported browser on HTTPS or localhost.");
@@ -32,10 +32,13 @@ export class Recorder {
     let stream: MediaStream | undefined;
     try {
       await context.resume();
+      signal?.throwIfAborted();
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
+      signal?.throwIfAborted();
       await context.audioWorklet.addModule(new URL("./capture.worklet.js", import.meta.url));
+      signal?.throwIfAborted();
       const input = context.createMediaStreamSource(stream);
       const processor = new AudioWorkletNode(context, "svara-capture", { channelCount: 1 });
       const chunks: Float32Array[] = [];
@@ -121,7 +124,7 @@ export class Recorder {
     }
   }
 
-  async finish(): Promise<Blob> {
+  async finishSamples(): Promise<Float32Array> {
     const rate = this.context.sampleRate;
     this.stop();
     const length = this.chunks.reduce((size, chunk) => size + chunk.length, 0);
@@ -142,9 +145,13 @@ export class Recorder {
     source.start();
     const rendered = await audio.startRendering();
     const samples = rendered.getChannelData(0);
-    return wav(this.boundary
+    return this.boundary
       ? samples.subarray(this.boundary.start * FRAME_SAMPLES, this.boundary.end * FRAME_SAMPLES)
-      : samples);
+      : samples;
+  }
+
+  async finish(): Promise<Blob> {
+    return wav(await this.finishSamples());
   }
 
   stop() {
