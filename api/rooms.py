@@ -59,6 +59,7 @@ class Room:
     revisions: dict = field(default_factory=dict)
     changed: asyncio.Condition = field(default_factory=asyncio.Condition)
     speech_jobs: set = field(default_factory=set)
+    pending_voice: tuple | None = None
     connections: set = field(default_factory=set)
 
     def expired(self) -> bool:
@@ -130,6 +131,7 @@ class Room:
             self.events.clear()
             self.commands.clear()
             self.revisions.clear()
+            self.pending_voice = None
             self.appointment = None
             event = self.emit("room.ended", sender=role)
 
@@ -158,6 +160,10 @@ class Room:
             raise RoomError("stale_revision", "Review the latest revision before sending.")
         if (action.intent == "counter") != (action.requested_slot is not None):
             raise RoomError("invalid_slot", "A counteroffer needs a complete date and time.", 422)
+        if action.voice_render is not None:
+            expected = (action.voice_render, action.event_id, action.turn_id, action.revision, action.approved_text)
+            if not self.pending_voice or self.pending_voice[:-1] != expected or self.pending_voice[-1] <= time.monotonic():
+                raise RoomError("voice_mismatch", "Review and attach the audio for this exact message.")
         if action.intent == "message":
             if action.offer_id is not None:
                 raise RoomError("invalid_offer", "A general message must omit the offer ID.", 422)
@@ -170,6 +176,7 @@ class Room:
             else:
                 appointment.status = "countered"
 
+        self.pending_voice = None
         self.revisions[action.turn_id] = action.revision
         return self.emit(
             "patient.message",

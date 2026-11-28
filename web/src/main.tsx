@@ -6,9 +6,12 @@ import { Playback, Recorder, transcribe } from "./audio";
 import { Comparison } from "./Comparison";
 import { displaySlot, REFERENCE_MONDAY, SAMPLE_TEXT, slot, speakSlot } from "./clinic";
 import {
-  api, Appointment, createRoom, Credentials, emptyRoom, History, joinRoom, reduceRoom, Relay, Role, Slot,
+  api, ApiError, Appointment, createRoom, Credentials, emptyRoom, History, joinRoom, reduceRoom, Relay, Role, Slot,
 } from "./relay";
-import { candidate, Draft, reviewDecision, timeOf } from "./review";
+import { candidate, clarifyTime, Draft, reviewDecision, timeOf } from "./review";
+import { VoiceStudio } from "./VoiceStudio";
+import { renderVoice, voiceHeaders, voiceToken } from "./personal";
+import { useSwitch } from "./useSwitch";
 import "./style.css";
 
 const SAMPLE_SLOT = slot("2026-12-04", "17:00");
@@ -106,7 +109,13 @@ function usePeerPlayback(room: RoomClient, role: Role, playback: Playback, setNo
       : message.event.decision.approved_text;
     try {
       if (!message.delivered) await connection.send({ type: "peer.receipt", status: "delivered", message_id: id });
-      await playback.speak(room.credentials, text);
+      if (message.event.type === "patient.message" && message.event.decision.voice_render) {
+        await playback.playRequest(`/api/voice/messages/${id}?room_id=${room.credentials.room_id}`, {
+          headers: { Authorization: `Bearer ${room.credentials.token}` },
+        });
+      } else {
+        await playback.speak(room.credentials, text);
+      }
       await connection.send({ type: "peer.receipt", status: "played", message_id: id });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -125,6 +134,7 @@ function HistoryList({ items, role, disabled, play }: {
     <ol className="history">{items.map(item => <li key={item.event.message_id}>
       <strong>{item.event.sender === "patient" ? "Patient" : "Clinic"}</strong>
       <p>{item.event.type === "desk.offer" ? displaySlot(item.event.appointment.slot) : item.event.decision.approved_text}</p>
+      {item.event.type === "patient.message" && item.event.decision.voice_render && <p>Personal AI voice</p>}
       <small>{item.playback === "played" ? "Played" : item.playback === "failed" ? "Playback failed"
         : item.delivered ? "Delivered" : "Waiting for receipt"}</small>
       {item.event.sender !== role && <button type="button" data-scan disabled={disabled}
@@ -219,40 +229,21 @@ function Desk() {
   </>;
 }
 
-function useSwitch(enabled: boolean, speed: number) {
-  useEffect(() => {
-    if (!enabled) return;
-    let active: HTMLButtonElement | null = null;
-    function advance() {
-      const buttons = [...document.querySelectorAll<HTMLButtonElement>("main button[data-scan]:enabled")];
-      const index = active ? buttons.indexOf(active) : -1;
-      active?.classList.remove("scan");
-      active = buttons[(index + 1) % buttons.length] ?? null;
-      active?.classList.add("scan");
-    }
-    function activate(event: KeyboardEvent) {
-      if (event.code !== "Space" || (event.target as HTMLElement | null)?.closest("input, textarea, select")) return;
-      event.preventDefault();
-      if (!event.repeat && active?.isConnected && !active.disabled) active.click();
-    }
-    advance();
-    const timer = window.setInterval(advance, speed);
-    window.addEventListener("keydown", activate);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener("keydown", activate);
-      active?.classList.remove("scan");
-    };
-  }, [enabled, speed]);
-}
-
 function Patient() {
   const room = useRoom("patient");
   const playback = usePlayer(room);
   const [notice, setNotice] = useState("");
   const playDesk = usePeerPlayback(room, "patient", playback, setNotice);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [personal, setPersonal] = useState(() => !!voiceToken());
+  const [personalClip, setPersonalClip] = useState<{event: string; id: string}>();
+  const rendering = useRef<AbortController | null>(null);
   const [readRevision, setReadRevision] = useState<string>();
+  const pendingField = useRef<Draft | null>(null);
+  const activeDraft = useRef(draft);
+  activeDraft.current = draft;
+  const activeOffer = useRef(room.state.appointment);
+  activeOffer.current = room.state.appointment;
   const [phase, setPhase] = useState<"idle" | "starting" | "recording" | "processing" | "playing" | "sending">("idle");
   const [scan, setScan] = useState(false);
   const [speed, setSpeed] = useState(2000);
@@ -274,6 +265,7 @@ function Patient() {
   useSwitch(scan, speed);
 
   function stopWork() {
+    rendering.current?.abort();
     work.current?.abort();
     work.current = null;
     recorder.current?.stop();
@@ -353,7 +345,7 @@ function Patient() {
     });
   }
 
-  async function recognise(workItem: AbortController, source: Promise<Blob>, offered?: Appointment) {
+  async function recognise(workItem: AbortController, source: Promise<Blob>, offered?: Appointment, followup?: Draft | null) {
     if (!room.credentials) return;
     setPhase("processing");
     const turnId = crypto.randomUUID();
@@ -366,6 +358,15 @@ function Patient() {
         throw new Error("Recognition returned a different recording. Please retry your turn.");
       }
       if (!result.raw_text) throw new Error("No words were recognised. Try again or use a saved phrase.");
+      if (followup) {
+        if (activeDraft.current?.eventId !== followup.eventId || activeOffer.current?.offer_id !== followup.offerId ||
+            activeOffer.current?.status !== "open") throw new Error("The draft or offer changed. Review the latest offer.");
+        const patch = clarifyTime(followup, result.raw_text);
+        if (!patch) throw new Error("That answer was unclear. Say the hour or period again, or use a choice.");
+        revise(patch);
+        setNotice("Time updated. Review the whole message before sending.");
+        return;
+      }
       setDraft({ ...candidate(result.raw_text, offered), turn_id: turnId });
       setReadRevision(undefined);
       setNotice(`Local recognition processed ${(result.audio_ms / 1000).toFixed(1)} seconds.`);
@@ -379,7 +380,8 @@ function Patient() {
     }
   }
 
-  async function beginRecording() {
+  async function beginRecording(followup: Draft | null = null) {
+    pendingField.current = followup;
     setNotice("");
     setReadRevision(undefined);
     const current = new AbortController();
@@ -387,7 +389,7 @@ function Patient() {
     recordingOffer.current = openOffer;
     setPhase("starting");
     try {
-      const capture = await Recorder.start(finishRecording, waitMs, setNotice);
+      const capture = await Recorder.start(finishRecording, waitMs, setNotice, current.signal);
       if (current.signal.aborted) {
         capture.stop();
         return;
@@ -407,7 +409,7 @@ function Patient() {
     if (!recorder.current || !work.current) return;
     const capture = recorder.current;
     recorder.current = null;
-    void recognise(work.current, capture.finish(), recordingOffer.current);
+    void recognise(work.current, capture.finish(), recordingOffer.current, pendingField.current);
   }
 
   function prepareOfferDecision(intent: "accept" | "decline") {
@@ -438,10 +440,25 @@ function Patient() {
     const revision = draft.eventId;
     setPhase("playing");
     setNotice("");
+    const job = new AbortController();
+    rendering.current = job;
     try {
-      await playback.speak(room.credentials, approved);
+      if (personal) {
+        const token = voiceToken();
+        const id = personalClip?.event === revision ? personalClip.id : await renderVoice(token, approved, "hi", job.signal);
+        job.signal.throwIfAborted();
+        await playback.playRequest(`/api/voice/renders/${id}`, { headers: voiceHeaders(token) });
+        job.signal.throwIfAborted();
+        setPersonalClip({ event: revision, id });
+      } else {
+        await playback.speak(room.credentials, approved);
+      }
       setReadRevision(revision);
     } catch (error) {
+      if (error instanceof ApiError && error.code === "clip_missing") {
+        setPersonalClip(undefined);
+        setReadRevision(undefined);
+      }
       if (!(error instanceof DOMException && error.name === "AbortError")) setNotice(errorMessage(error));
     } finally {
       setPhase("idle");
@@ -452,7 +469,16 @@ function Patient() {
     if (!draft || !decision || !reviewable || readRevision !== draft.eventId || !room.relay.current) return;
     setPhase("sending");
     try {
-      await room.relay.current.send({ type: "patient.commit", ...decision }, draft.eventId);
+      let renderId: string | undefined;
+      if (personal) {
+        if (!room.credentials || personalClip?.event !== draft.eventId) throw new Error("Listen to this revision in your personal voice first.");
+        renderId = personalClip.id;
+        await api(`/api/voice/attach?room_id=${room.credentials.room_id}`, {
+          method: "POST", headers: { ...voiceHeaders(room.credentials.token), "X-Voice-Token": voiceToken() },
+          body: JSON.stringify({ render_id: renderId, event_id: draft.eventId, turn_id: draft.turn_id, revision: draft.revision }),
+        });
+      }
+      await room.relay.current.send({ type: "patient.commit", ...decision, voice_render: renderId }, draft.eventId);
       setDraft(null);
       setReadRevision(undefined);
       setNotice("Approved message sent.");
@@ -514,6 +540,7 @@ function Patient() {
             setReadRevision(undefined);
           }}>Request another time</button>
         </div>}
+        <button data-scan disabled={phase !== "idle"} onClick={() => {setDraft(candidate("")); setReadRevision(undefined);}}>Write a message</button>
         <button data-scan disabled={phase !== "idle"} onClick={() => {
           setDraft(candidate("कृपया समय दोबारा बताइए।")); setReadRevision(undefined);
         }}>Saved phrase · repeat the offer</button>
@@ -534,6 +561,8 @@ function Patient() {
           <textarea value={draft.text} maxLength={600} disabled={phase !== "idle"}
             onChange={event => revise({ text: event.target.value })} /></label>}
         {draft.intent === "counter" && <div>
+          {!draft.time && (draft.hour || draft.hours.length > 1) && <button data-scan disabled={phase !== "idle" || !!stale}
+            onClick={() => void beginRecording(draft)}>Speak the missing time detail</button>}
           {draft.hours.length > 1 && !draft.hour && <fieldset>
             <legend>Which hour did you mean?</legend>
             <div className="actions">{draft.hours.map(hour => <button key={hour} data-scan disabled={phase !== "idle"}
@@ -561,7 +590,7 @@ function Patient() {
         {draft.intent === "counter" && requested && <p>{displaySlot(requested)} · India time</p>}
         <div className="actions">
           <button data-scan disabled={!reviewable} onClick={() => void readBack()}>Read back privately</button>
-          <button data-scan disabled={!reviewable} onClick={() => setReadRevision(draft.eventId)}>I reviewed the caption</button>
+          <button data-scan disabled={!reviewable || personal} onClick={() => setReadRevision(draft.eventId)}>I reviewed the caption</button>
           <button className="primary" data-scan disabled={!reviewable || readRevision !== draft.eventId}
             onClick={() => void sendDraft()}>Approve and send</button>
           <button data-scan disabled={phase === "sending"} onClick={() => {
@@ -576,6 +605,10 @@ function Patient() {
       }} />
       <section>
         <h2>Access preferences</h2>
+        {voiceToken() && <button data-scan disabled={phase !== "idle"} aria-pressed={personal} onClick={() => {
+          setPersonal(!personal); setReadRevision(undefined);
+        }}>{personal ? "Use standard clinic voice" : "Use my personal voice"}</button>}
+        {(!room.credentials || room.state.ended) && <p><a className="button" href="/voice">My voice · conversations and messages</a></p>}
         <label>Pause before finishing a recording <select value={waitMs} disabled={phase !== "idle"}
           onChange={event => applyWait(Number(event.target.value))}>
           {![0, 2500, 3000, 4000].includes(waitMs) && <option value={waitMs}>{seconds(waitMs)}</option>}
@@ -631,6 +664,7 @@ function Lab() {
 }
 
 function App() {
+  if (location.pathname === "/voice") return <VoiceStudio />;
   if (location.pathname === "/desk") return <Desk />;
   if (location.pathname === "/lab") return <Lab />;
   return <><nav aria-label="Testing"><a href="/lab">Test lab</a></nav><Patient /></>;

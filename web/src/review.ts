@@ -136,3 +136,19 @@ export function reviewDecision(draft: Draft, current: Appointment | null): Decis
   const requested_slot = slot(draft.date, draft.time);
   return { ...base, requested_slot, approved_text: `${refusal} क्या ${speakSlot(requested_slot)} मिल सकता है?` };
 }
+
+// A follow-up can resolve only the field currently being asked about.
+export function clarifyTime(draft: Draft, answer: string): Partial<Draft> | null {
+  const word = answer.normalize("NFC").trim().toLowerCase().replace(/[।.!?]+$/u, "").trim()
+    .replace(/[०-९]/g, digit => String(digit.charCodeAt(0) - 2406));
+  if (draft.intent !== "counter" || draft.time) return null;
+  if (draft.hours.length > 1 && !draft.hour) {
+    const hour = hourOf(word.replace(/\s+(?:बजे|baje)$/u, ""));
+    return hour !== null && draft.hours.includes(hour) ? { hour, time: timeOf(hour, draft.period) } : null;
+  }
+  if (draft.hour && !draft.period) {
+    const period = periodOf(word);
+    return period ? { period, time: timeOf(draft.hour, period) } : null;
+  }
+  return null;
+}

@@ -81,6 +81,7 @@ class ExchangeTests(unittest.TestCase):
             with self.client.websocket_connect("/api/relay", headers=ORIGIN) as second:
                 second.send_json({key: self.patient[key] for key in ("room_id", "token")})
                 self.assertEqual(second.receive_json()["code"], "role_connected")
+                self.assertEqual(second.receive()["code"], 1008)
 
     def test_private_state_counter_receipts_and_replay(self):
         with self.peer("patient") as patient, self.peer("desk") as desk:

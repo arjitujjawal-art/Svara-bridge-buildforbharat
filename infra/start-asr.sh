@@ -13,7 +13,7 @@ if ! verified "$model" 2>/dev/null; then
     trap 'rm -f "$temporary"' EXIT
     curl --silent --show-error --fail --location --proto '=https' --proto-redir '=https' --connect-timeout 15 \
         --max-time 300 --retry 1 --output "$temporary" \
-        https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+        'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true'
     verified "$temporary" || { printf '%s\n' 'Whisper model checksum mismatch' >&2; exit 1; }
     mv "$temporary" "$model"
     trap - EXIT

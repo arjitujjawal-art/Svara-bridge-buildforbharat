@@ -9,8 +9,9 @@ ORIGIN = os.environ.get("SVARA_TEST_ORIGIN", "http://127.0.0.1:8080")
 
 def run():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
-        patient = browser.new_context().new_page()
+        browser = playwright.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"),
+                                             args=["--use-fake-device-for-media-stream"])
+        patient = browser.new_context(permissions=["microphone"]).new_page()
         desk = browser.new_context().new_page()
         patient.goto(f"{ORIGIN}/patient")
         patient.get_by_role("button", name="Call my clinic").click()
@@ -20,7 +21,7 @@ def run():
 
         ambiguous = "Paanch baje nahi. Monday chaar ya saat baje milega?"
         conditional = "Haan, lekin Monday ko agar doctor Sharma hain"
-        transcripts = iter([None, ambiguous, conditional, ambiguous])
+        transcripts = iter([None, ambiguous, conditional, ambiguous, "शाम"])
 
         def stub_recogniser(route):
             query = parse_qs(urlsplit(route.request.url).query)
@@ -66,7 +67,9 @@ def run():
         expect(patient.locator(".appointment")).to_contain_text("5:00")
         sample.click()
         patient.get_by_role("button", name="4 o’clock").click()
-        patient.get_by_role("button", name="Afternoon or evening").click()
+        patient.get_by_role("button", name="Speak the missing time detail").click()
+        patient.get_by_role("button", name="Finish recording").click()
+        expect(patient.get_by_label("Requested time in India")).to_have_value("16:00")
         wording = patient.locator(".sentence").inner_text()
         assert "नहीं" in wording and "सोमवार" in wording and "चार बजे" in wording
         patient.get_by_role("button", name="Read back privately").click()

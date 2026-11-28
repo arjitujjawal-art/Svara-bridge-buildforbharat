@@ -38,6 +38,7 @@ class Decision(Command):
     type: Literal["patient.commit"]
     turn_id: UUID
     revision: Annotated[int, Field(strict=True, ge=1, le=10000)]
+    voice_render: UUID | None = None
     approved_text: Text
     intent: Literal["message", "decline", "counter", "accept"]
     offer_id: UUID | None = None

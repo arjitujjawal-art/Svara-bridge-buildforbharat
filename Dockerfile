@@ -22,6 +22,8 @@ COPY requirements.txt ./
 RUN --mount=type=secret,id=network_ca \
     if [ -f /run/secrets/network_ca ]; then export PIP_CERT=/run/secrets/network_ca; fi; \
     pip install --no-cache-dir -r requirements.txt
+RUN mkdir -p /voice/models /voice/profiles && chown -R 65534:65534 /voice
+COPY --chown=65534:65534 voice/ ./voice/
 COPY --chown=65534:65534 api/ ./api/
 COPY --from=web --chown=65534:65534 /src/web/dist ./web/dist
 ENV PYTHONDONTWRITEBYTECODE=1

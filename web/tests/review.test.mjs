@@ -62,3 +62,13 @@ test("keep supported alternatives available and distinguish explicit AM and PM",
   assert.equal(candidate("nahi Monday 12 pm", offer).time, "12:00");
   assert.equal(reviewDecision(candidate(SAMPLE_TEXT), null).approved_text, SAMPLE_TEXT);
 });
+
+test("a spoken clarification edits only the requested field", async () => {
+  const { clarifyTime } = await import("../src/review.ts");
+  const draft = candidate("नहीं। सोमवार को चार या सात बजे मिलेगा?", offer);
+  assert.equal(clarifyTime(draft, "नौ बजे"), null);
+  const hour = clarifyTime(draft, "चार बजे।");
+  assert.deepEqual(hour, { hour: 4, time: "" });
+  assert.deepEqual(clarifyTime({ ...draft, ...hour }, "शाम।"), { period: "pm", time: "16:00" });
+  assert.equal(clarifyTime({ ...draft, ...hour }, "शाम नहीं"), null);
+});

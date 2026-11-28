@@ -13,6 +13,7 @@ from pydantic import Field, StringConstraints, ValidationError
 from starlette.requests import ClientDisconnect
 
 from .protocol import ACTION, Payload, Text
+from .personal import install_voice_routes
 from .rooms import ROOM_IDLE, Room, RoomError, Rooms
 from .speech import MAX_WAV, SAMPLE, Speech, read_audio
 
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
             while True:
                 await asyncio.sleep(30)
                 rooms.prune()
+                voice.prune()
 
         task = asyncio.create_task(sweep())
         try:
@@ -92,6 +94,8 @@ def create_app() -> FastAPI:
         if room.ended:
             raise RoomError("room_ended", "Start a new room to continue.")
         return room, role
+
+    voice = install_voice_routes(app, authenticate, rooms)
 
     @app.post("/api/speech", response_class=Response)
     async def say(body: Say, room_id: UUID, authorization: Annotated[str, Header()] = ""):
@@ -255,6 +259,7 @@ def create_app() -> FastAPI:
     @app.get("/")
     @app.get("/patient")
     @app.get("/desk")
+    @app.get("/voice")
     @app.get("/lab")
     async def front_end():
         if not (DIST / "index.html").is_file():

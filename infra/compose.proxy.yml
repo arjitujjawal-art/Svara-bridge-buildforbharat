@@ -4,6 +4,14 @@ services:
     build:
       secrets:
         - network_ca
+  voice-model:
+    build:
+      secrets:
+        - network_ca
+    environment:
+      SSL_CERT_FILE: /run/secrets/network_ca
+    secrets:
+      - network_ca
   asr:
     environment:
       CURL_CA_BUNDLE: /run/secrets/network_ca

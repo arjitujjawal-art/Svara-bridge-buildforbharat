@@ -5,11 +5,25 @@ services:
       - "${SVARA_PORT:-8080}:8000"
     environment:
       SVARA_ASR_ORIGIN: http://asr:8081
+      SVARA_TWILIO_ACCOUNT: ${SVARA_TWILIO_ACCOUNT:-}
+      SVARA_TWILIO_TOKEN: ${SVARA_TWILIO_TOKEN:-}
+      SVARA_PHONE_PROFILE: ${SVARA_PHONE_PROFILE:-}
+      SVARA_PHONE_FROM: ${SVARA_PHONE_FROM:-}
+      SVARA_PHONE_TO: ${SVARA_PHONE_TO:-}
+      SVARA_PUBLIC_ORIGIN: ${SVARA_PUBLIC_ORIGIN:-}
+    volumes:
+      - voice-model:/voice/models:ro
+      - voice-profiles:/voice/profiles
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
       interval: 10s
       timeout: 4s
       retries: 4
+  voice-model:
+    build: .
+    command: ["python", "voice/fetch.py", "/voice/models"]
+    volumes:
+      - voice-model:/voice/models
   asr:
     build:
       context: .
@@ -18,3 +32,5 @@ services:
       - model:/models
 volumes:
   model:
+  voice-model:
+  voice-profiles:

@@ -9,6 +9,7 @@ export type Decision = {
   turn_id: string;
   revision: number;
   approved_text: string;
+  voice_render?: string;
   intent: "message" | "decline" | "counter" | "accept";
   offer_id?: string;
   requested_slot?: Slot;
@@ -75,11 +76,15 @@ export function reduceRoom(state: RoomState, event: RelayEvent): RoomState {
   }
 }
 
+export class ApiError extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
 export async function api(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(path, init);
   if (response.ok) return response;
   const body = await response.json().catch(() => null);
-  throw new Error(typeof body?.detail === "string" ? body.detail : `Request failed (${response.status}).`);
+  throw new ApiError(body?.code ?? "request_failed", typeof body?.detail === "string" ? body.detail : `Request failed (${response.status}).`);
 }
 
 export function createRoom(): Promise<Credentials> {
